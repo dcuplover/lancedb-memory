@@ -32,7 +32,8 @@
             "items": { "type": "string" },
             "default": ["apiKey", "token", "password", "secret"]
           }
-        }
+        },
+        "additionalProperties": false
       },
       "layers": {
         "type": "object",
@@ -42,30 +43,35 @@
             "properties": {
               "ttlMs": { "type": "number", "default": 3600000 },
               "maxEntries": { "type": "number", "default": 500 }
-            }
+            },
+            "additionalProperties": false
           },
           "episodic": {
             "type": "object",
             "properties": {
               "retentionDays": { "type": "number", "default": 30 },
               "maxEntries": { "type": "number", "default": 10000 }
-            }
+            },
+            "additionalProperties": false
           },
           "knowledge": {
             "type": "object",
             "properties": {
               "maxEntries": { "type": "number", "default": 2000 },
               "syncToMemoryMd": { "type": "boolean", "default": true }
-            }
+            },
+            "additionalProperties": false
           },
           "structural": {
             "type": "object",
             "properties": {
               "maxEntities": { "type": "number", "default": 1000 },
               "maxRelations": { "type": "number", "default": 5000 }
-            }
+            },
+            "additionalProperties": false
           }
-        }
+        },
+        "additionalProperties": false
       },
       "compaction": {
         "type": "object",
@@ -75,7 +81,8 @@
           "episodicRetentionDays": { "type": "number", "default": 30 },
           "knowledgeMergeSimilarityThreshold": { "type": "number", "default": 0.92 },
           "memoryMdMaxTokens": { "type": "number", "default": 10000 }
-        }
+        },
+        "additionalProperties": false
       },
       "retrieval": {
         "type": "object",
@@ -84,7 +91,8 @@
           "minScore": { "type": "number", "default": 0.3 },
           "rerankEnabled": { "type": "boolean", "default": false },
           "timeoutMs": { "type": "number", "default": 5000 }
-        }
+        },
+        "additionalProperties": false
       },
       "embedding": {
         "type": "object",
@@ -94,7 +102,8 @@
           "baseURL": { "type": "string", "default": "https://api.openai.com/v1" },
           "dimensions": { "type": "number", "default": 1536 }
         },
-        "required": ["apiKey"]
+        "required": ["apiKey"],
+        "additionalProperties": false
       },
       "dbPath": { "type": "string", "default": "~/.openclaw/memory-db" }
     },
