@@ -14,7 +14,7 @@
       "autoCapture": { "type": "boolean", "default": true },
       "autoRecall": { "type": "boolean", "default": true },
       "dbPath": { "type": "string", "default": "~/.openclaw/memory-db" },
-      "vectorDimension": { "type": "number", "enum": [384, 1536], "default": 1536 },
+      "vectorDimension": { "type": "number", "default": 1536 },
       "embedding": {
         "type": "object",
         "properties": {

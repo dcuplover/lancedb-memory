@@ -34,7 +34,7 @@ export interface PluginConfig {
   dbPath: string;
 
   /** 向量维度（默认 1536） */
-  vectorDimension: 384 | 1536;
+  vectorDimension: number;
 
   /** 嵌入配置（必填） */
   embedding: {
@@ -92,7 +92,7 @@ export function parseConfig(raw: unknown): PluginConfig {
   const autoCapture = (input.autoCapture as boolean) ?? true;
   const autoRecall = (input.autoRecall as boolean) ?? true;
   const dbPath = (input.dbPath as string) || "~/.openclaw/memory-db";
-  const vectorDimension = ((input.vectorDimension as number) || 1536) as 384 | 1536;
+  const vectorDimension = (input.vectorDimension as number) || 1536;
 
   // ── 3. 合并子模块配置 ─────────────────────────────────────────────────
   const collectorInput = (input.collector as Partial<CollectorConfig>) || {};

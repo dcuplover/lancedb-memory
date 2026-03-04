@@ -162,7 +162,7 @@ export interface StoreConfig {
     entities: TableLimits;
     relations: TableLimits;
   };
-  vectorDimension: 384 | 1536;
+  vectorDimension: number;
   vectorIndexType: "IVF_PQ" | "HNSW";
   ftsEnabled: boolean;
   ftsLanguage: "english" | "chinese" | "auto";
