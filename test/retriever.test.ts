@@ -130,6 +130,17 @@ function createMockStore(): MemoryStore {
       return [];
     },
 
+    hybridSearch: async (table, text, vector, options) => {
+      const results = {
+        stm: mockSTMEntries,
+        episodic: mockEpisodicEntries,
+        knowledge: mockKnowledgeEntries,
+        entities: mockEntityEntries,
+        relations: [] as any[],
+      };
+      return (results[table] || []).map((r) => ({ ...r, _score: 0.80, _vectorScore: 0.85, _ftsScore: 0.75 }));
+    },
+
     query: async (table, filter, options) => {
       const results = {
         stm: mockSTMEntries,

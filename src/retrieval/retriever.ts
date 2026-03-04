@@ -92,7 +92,7 @@ export function createRetriever(
   // ─── 层级检索 ───────────────────────────────────────────────────────────────
 
   async function searchSTM(query: RetrievalQuery, topK: number): Promise<ScoredEntry[]> {
-    if (!query.vector) return [];
+    if (!query.vector && !query.text) return [];
 
     try {
       const filter: FilterExpression = {
@@ -101,30 +101,65 @@ export function createRetriever(
           query.filters?.scope ? { eq: ["sessionKey", query.filters.scope] } : null,
         ].filter(Boolean) as FilterExpression[],
       };
+      const effectiveFilter = filter.and!.length > 0 ? filter : undefined;
 
-      const results = await store.vectorSearch("stm", query.vector, {
-        topK,
-        filter: filter.and!.length > 0 ? filter : undefined,
-        minScore: config.minScore * 0.8, // STM 略放宽阈值
-      });
+      // 优先使用混合搜索
+      if (query.vector && query.text) {
+        const results = await store.hybridSearch("stm", query.text, query.vector, {
+          topK,
+          minScore: config.minScore * 0.8,
+          filter: effectiveFilter,
+          vectorWeight: 0.7,
+          ftsWeight: 0.3,
+        });
 
-      return results.map((r) => {
-        const entry = r as any;
-        return {
-          id: entry.id,
-          layer: "stm" as const,
-          content: entry.content,
-          score: r._score,
-          scores: {
-            vector: r._score,
-            bm25: 0,
-            recency: computeRecencyScore(entry.createdAt),
-            importance: entry.importance,
-          },
-          metadata: JSON.parse(entry.metadata),
-          timestamp: entry.createdAt,
-        };
-      });
+        return results.map((r) => {
+          const entry = r as any;
+          return {
+            id: entry.id,
+            layer: "stm" as const,
+            content: entry.content,
+            score: r._score,
+            scores: {
+              vector: r._vectorScore,
+              bm25: r._ftsScore,
+              recency: computeRecencyScore(entry.createdAt),
+              importance: entry.importance,
+            },
+            metadata: JSON.parse(entry.metadata),
+            timestamp: entry.createdAt,
+          };
+        });
+      }
+
+      // 仅向量
+      if (query.vector) {
+        const results = await store.vectorSearch("stm", query.vector, {
+          topK,
+          filter: effectiveFilter,
+          minScore: config.minScore * 0.8,
+        });
+
+        return results.map((r) => {
+          const entry = r as any;
+          return {
+            id: entry.id,
+            layer: "stm" as const,
+            content: entry.content,
+            score: r._score,
+            scores: {
+              vector: r._score,
+              bm25: 0,
+              recency: computeRecencyScore(entry.createdAt),
+              importance: entry.importance,
+            },
+            metadata: JSON.parse(entry.metadata),
+            timestamp: entry.createdAt,
+          };
+        });
+      }
+
+      return [];
     } catch (err) {
       logger?.warn("[retriever] STM search failed", { error: err });
       return [];
@@ -135,8 +170,36 @@ export function createRetriever(
     const results: ScoredEntry[] = [];
 
     try {
-      // 向量检索
-      if (query.vector) {
+      // 优先使用混合搜索
+      if (query.vector && query.text) {
+        const hybridResults = await store.hybridSearch("episodic", query.text, query.vector, {
+          topK,
+          minScore: config.minScore * 0.9,
+          vectorWeight: 0.6,
+          ftsWeight: 0.4,
+        });
+
+        results.push(
+          ...hybridResults.map((r) => {
+            const entry = r as any;
+            return {
+              id: entry.id,
+              layer: "episodic" as const,
+              content: entry.content,
+              score: r._score,
+              scores: {
+                vector: r._vectorScore,
+                bm25: r._ftsScore,
+                recency: computeRecencyScore(entry.timestamp),
+                importance: 0.5,
+              },
+              metadata: JSON.parse(entry.metadata),
+              timestamp: entry.timestamp,
+            };
+          })
+        );
+      } else if (query.vector) {
+        // 仅向量检索
         const vectorResults = await store.vectorSearch("episodic", query.vector, {
           topK,
           minScore: config.minScore * 0.9,
@@ -208,14 +271,46 @@ export function createRetriever(
   }
 
   async function searchKnowledge(query: RetrievalQuery, topK: number): Promise<ScoredEntry[]> {
-    const resultLists: ScoredEntry[][] = [];
-
     try {
-      // 向量检索（只搜活跃知识）
+      const activeFilter: FilterExpression = { eq: ["supersededBy", ""] };
+
+      // 优先使用混合搜索
+      if (query.vector && query.text) {
+        const hybridResults = await store.hybridSearch("knowledge", query.text, query.vector, {
+          topK,
+          filter: activeFilter,
+          minScore: config.minScore,
+          ftsFields: ["claim"],
+          vectorWeight: 0.5,
+          ftsWeight: 0.5,
+        });
+
+        return hybridResults.map((r) => {
+          const entry = r as any;
+          return {
+            id: entry.id,
+            layer: "knowledge" as const,
+            content: entry.claim,
+            score: r._score,
+            scores: {
+              vector: r._vectorScore,
+              bm25: r._ftsScore,
+              recency: computeRecencyScore(entry.updatedAt),
+              importance: entry.confidence,
+            },
+            metadata: JSON.parse(entry.metadata),
+            timestamp: entry.updatedAt,
+          };
+        });
+      }
+
+      // 仅向量或仅文本搜索的降级路径
+      const resultLists: ScoredEntry[][] = [];
+
       if (query.vector) {
         const vectorResults = await store.vectorSearch("knowledge", query.vector, {
           topK,
-          filter: { eq: ["supersededBy", ""] }, // 未被取代
+          filter: activeFilter,
           minScore: config.minScore,
         });
 
@@ -240,37 +335,38 @@ export function createRetriever(
         );
       }
 
-      // BM25 文本检索（针对 claim 字段）
-      try {
-        const bm25Results = await store.textSearch("knowledge", query.text, {
-          topK,
-          fields: ["claim"],
-        });
+      if (query.text) {
+        try {
+          const bm25Results = await store.textSearch("knowledge", query.text, {
+            topK,
+            fields: ["claim"],
+            filter: activeFilter,
+          });
 
-        resultLists.push(
-          bm25Results.map((r) => {
-            const entry = r as any;
-            return {
-              id: entry.id,
-              layer: "knowledge" as const,
-              content: entry.claim,
-              score: r._score,
-              scores: {
-                vector: 0,
-                bm25: r._score,
-                recency: computeRecencyScore(entry.updatedAt),
-                importance: entry.confidence,
-              },
-              metadata: JSON.parse(entry.metadata),
-              timestamp: entry.updatedAt,
-            };
-          })
-        );
-      } catch {
-        // BM25 可能不可用，静默失败
+          resultLists.push(
+            bm25Results.map((r) => {
+              const entry = r as any;
+              return {
+                id: entry.id,
+                layer: "knowledge" as const,
+                content: entry.claim,
+                score: r._score,
+                scores: {
+                  vector: 0,
+                  bm25: r._score,
+                  recency: computeRecencyScore(entry.updatedAt),
+                  importance: entry.confidence,
+                },
+                metadata: JSON.parse(entry.metadata),
+                timestamp: entry.updatedAt,
+              };
+            })
+          );
+        } catch {
+          // BM25 可能不可用，静默失败
+        }
       }
 
-      // RRF 融合
       return fusionRRF(resultLists, 60);
     } catch (err) {
       logger?.warn("[retriever] Knowledge search failed", { error: err });
@@ -280,35 +376,67 @@ export function createRetriever(
 
   async function searchStructural(query: RetrievalQuery, topK: number): Promise<ScoredEntry[]> {
     try {
-      if (!query.vector) return [];
+      if (!query.vector && !query.text) return [];
 
-      // 实体检索
-      const entityResults = await store.vectorSearch("entities", query.vector, {
-        topK: Math.ceil(topK / 2),
-        minScore: config.minScore * 0.85,
-      });
+      const entityTopK = Math.ceil(topK / 2);
+      let results: ScoredEntry[] = [];
 
-      const results: ScoredEntry[] = entityResults.map((r) => {
-        const entry = r as any;
-        return {
-          id: entry.id,
-          layer: "structural" as const,
-          content: `${entry.name} (${entry.entityType})`,
-          score: r._score,
-          scores: {
-            vector: r._score,
-            bm25: 0,
-            recency: computeRecencyScore(entry.lastSeen),
-            importance: Math.min(entry.mentionCount / 100, 1.0),
-          },
-          metadata: JSON.parse(entry.metadata),
-          timestamp: entry.lastSeen,
-        };
-      });
+      // 优先使用混合搜索
+      if (query.vector && query.text) {
+        const hybridResults = await store.hybridSearch("entities", query.text, query.vector, {
+          topK: entityTopK,
+          minScore: config.minScore * 0.85,
+          ftsFields: ["name"],
+          vectorWeight: 0.6,
+          ftsWeight: 0.4,
+        });
+
+        results = hybridResults.map((r) => {
+          const entry = r as any;
+          return {
+            id: entry.id,
+            layer: "structural" as const,
+            content: `${entry.name} (${entry.entityType})`,
+            score: r._score,
+            scores: {
+              vector: r._vectorScore,
+              bm25: r._ftsScore,
+              recency: computeRecencyScore(entry.lastSeen),
+              importance: Math.min(entry.mentionCount / 100, 1.0),
+            },
+            metadata: JSON.parse(entry.metadata),
+            timestamp: entry.lastSeen,
+          };
+        });
+      } else if (query.vector) {
+        // 仅向量检索
+        const entityResults = await store.vectorSearch("entities", query.vector, {
+          topK: entityTopK,
+          minScore: config.minScore * 0.85,
+        });
+
+        results = entityResults.map((r) => {
+          const entry = r as any;
+          return {
+            id: entry.id,
+            layer: "structural" as const,
+            content: `${entry.name} (${entry.entityType})`,
+            score: r._score,
+            scores: {
+              vector: r._score,
+              bm25: 0,
+              recency: computeRecencyScore(entry.lastSeen),
+              importance: Math.min(entry.mentionCount / 100, 1.0),
+            },
+            metadata: JSON.parse(entry.metadata),
+            timestamp: entry.lastSeen,
+          };
+        });
+      }
 
       // 关系检索（基于已找到的实体）
-      if (entityResults.length > 0) {
-        const entityIds = entityResults.map((e) => e.id);
+      if (results.length > 0) {
+        const entityIds = results.map((e) => e.id);
         const relationResults = await store.query(
           "relations",
           {

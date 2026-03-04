@@ -1,9 +1,10 @@
 import { v4 as uuidv4 } from "uuid";
 import { buildWhereClause, buildOrderClause, sqlLiteral } from "./filter";
-import { getSampleRow, VECTOR_COLUMN, TABLES_WITHOUT_VECTOR } from "./schema";
+import { getSampleRow, VECTOR_COLUMN, TABLES_WITHOUT_VECTOR, TABLE_SEARCH_FIELDS } from "./schema";
 import type {
   AnyEntry,
   FilterExpression,
+  HybridSearchOptions,
   MemoryStore,
   QueryOptions,
   StoreConfig,
@@ -36,6 +37,8 @@ export class LanceDBStore implements MemoryStore {
   private readonly config: StoreConfig;
   /** 表名 → Table 实例缓存 */
   private readonly tableCache = new Map<string, LanceTable>();
+  /** 已创建 FTS 索引的表集合 */
+  private readonly ftsIndexed = new Set<string>();
 
   constructor(db: LanceConnection, config: StoreConfig) {
     this.db = db;
@@ -56,8 +59,36 @@ export class LanceDBStore implements MemoryStore {
       const sample = getSampleRow(name, this.config.vectorDimension);
       table = await this.db.createTable(name, [sample]);
     }
+
+    // 如果启用 FTS，为文本字段创建全文索引
+    if (this.config.ftsEnabled && !this.ftsIndexed.has(name)) {
+      await this.ensureFtsIndex(name, table);
+    }
+
     this.tableCache.set(name, table);
     return table;
+  }
+
+  // ─── 内部：确保 FTS 索引存在 ────────────────────────────────────────────────
+
+  private async ensureFtsIndex(name: string, table: LanceTable): Promise<void> {
+    const fields = TABLE_SEARCH_FIELDS[name];
+    if (!fields || fields.length === 0) return;
+
+    try {
+      const lancedb = await import("@lancedb/lancedb");
+      for (const field of fields) {
+        await table.createIndex(field, {
+          config: lancedb.Index.fts({
+            withPosition: true,
+          }),
+        });
+      }
+      this.ftsIndexed.add(name);
+    } catch {
+      // FTS 索引创建失败（可能已存在或列不支持），静默跳过
+      this.ftsIndexed.add(name);
+    }
   }
 
   // ─── 内部：向量维度校验 ────────────────────────────────────────────────────
@@ -222,10 +253,25 @@ export class LanceDBStore implements MemoryStore {
     query: string,
     options: TextSearchOptions
   ): Promise<Array<T & { _score: number }>> {
+    if (!query.trim()) return [];
+
     const t = await this.getTable(table);
     const topK = options.topK ?? 10;
 
-    let q = t.search(query).limit(topK);
+    // 确定 FTS 搜索字段
+    const ftsColumn = options.fields?.[0] ?? TABLE_SEARCH_FIELDS[table]?.[0];
+
+    let q;
+    if (ftsColumn) {
+      // 使用 FTS 模式进行全文检索
+      q = t.search(query, "fts", ftsColumn).limit(topK);
+    } else {
+      q = t.search(query, "fts").limit(topK);
+    }
+
+    if (options.filter) {
+      q = q.where(buildWhereClause(options.filter));
+    }
 
     const rawRows: unknown[] = await q.toArray();
 
@@ -234,6 +280,93 @@ export class LanceDBStore implements MemoryStore {
       const score = (r as Record<string, unknown>)["_score"] as number | undefined;
       return { ...row, _score: score ?? 1 } as T & { _score: number };
     });
+  }
+
+  // ─── hybridSearch ──────────────────────────────────────────────────────────
+
+  async hybridSearch<T extends AnyEntry>(
+    table: TableName,
+    text: string,
+    vector: Float32Array,
+    options: HybridSearchOptions
+  ): Promise<Array<T & { _score: number; _vectorScore: number; _ftsScore: number }>> {
+    this.checkDimension(vector);
+
+    const topK = options.topK ?? 10;
+    const rrfK = options.rrfK ?? 60;
+    const vectorWeight = options.vectorWeight ?? 0.7;
+    const ftsWeight = options.ftsWeight ?? 0.3;
+    const hasVector = !TABLES_WITHOUT_VECTOR.has(table);
+
+    // 并行执行向量搜索和全文搜索
+    const [vectorResults, ftsResults] = await Promise.all([
+      hasVector
+        ? this.vectorSearch<T>(table, vector, {
+            topK,
+            minScore: options.minScore,
+            filter: options.filter,
+          })
+        : Promise.resolve([]),
+      this.config.ftsEnabled && text.trim()
+        ? this.textSearch<T>(table, text, {
+            topK,
+            fields: options.ftsFields ?? TABLE_SEARCH_FIELDS[table],
+            filter: options.filter,
+          }).catch(() => [] as Array<T & { _score: number }>)
+        : Promise.resolve([] as Array<T & { _score: number }>),
+    ]);
+
+    // RRF 融合
+    type HybridEntry = T & { _score: number; _vectorScore: number; _ftsScore: number };
+    const idScores = new Map<string, { rrfScore: number; vectorScore: number; ftsScore: number; entry: T }>();
+
+    // 向量结果按排名计算 RRF 分数
+    vectorResults.forEach((r, rank) => {
+      const raw = r as unknown as Record<string, unknown>;
+      const id = raw.id as string;
+      const rrfScore = vectorWeight / (rrfK + rank + 1);
+      const existing = idScores.get(id);
+      if (existing) {
+        existing.rrfScore += rrfScore;
+        existing.vectorScore = r._score;
+      } else {
+        const { _score: _, ...entry } = raw;
+        idScores.set(id, { rrfScore, vectorScore: r._score, ftsScore: 0, entry: entry as unknown as T });
+      }
+    });
+
+    // FTS 结果按排名计算 RRF 分数
+    ftsResults.forEach((r, rank) => {
+      const raw = r as unknown as Record<string, unknown>;
+      const id = raw.id as string;
+      const rrfScore = ftsWeight / (rrfK + rank + 1);
+      const existing = idScores.get(id);
+      if (existing) {
+        existing.rrfScore += rrfScore;
+        existing.ftsScore = r._score;
+      } else {
+        const { _score: _, ...entry } = raw;
+        idScores.set(id, { rrfScore, vectorScore: 0, ftsScore: r._score, entry: entry as unknown as T });
+      }
+    });
+
+    // 按 RRF 分数排序，返回 topK
+    const results: HybridEntry[] = Array.from(idScores.values())
+      .sort((a, b) => b.rrfScore - a.rrfScore)
+      .slice(0, topK)
+      .map(({ rrfScore, vectorScore, ftsScore, entry }) => ({
+        ...entry,
+        _score: rrfScore,
+        _vectorScore: vectorScore,
+        _ftsScore: ftsScore,
+      } as HybridEntry));
+
+    // 最低分过滤
+    if (options.minScore !== undefined) {
+      return results.filter((r) => r._score >= options.minScore!);
+    }
+
+    return results;
   }
 
   // ─── query ─────────────────────────────────────────────────────────────────

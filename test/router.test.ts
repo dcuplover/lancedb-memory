@@ -75,6 +75,9 @@ function createMockStore(): MemoryStore {
     async textSearch() {
       return [];
     },
+    async hybridSearch() {
+      return [];
+    },
     async query() {
       return [];
     },

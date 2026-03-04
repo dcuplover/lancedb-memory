@@ -94,6 +94,23 @@ export interface TextSearchOptions {
   topK: number;
   fields?: string[];
   fuzzy?: boolean;
+  filter?: FilterExpression;
+}
+
+// ─── 混合搜索选项 ──────────────────────────────────────────────────────────────
+
+export interface HybridSearchOptions {
+  topK: number;
+  minScore?: number;
+  filter?: FilterExpression;
+  /** FTS 搜索的目标字段（默认使用 TABLE_SEARCH_FIELDS） */
+  ftsFields?: string[];
+  /** RRF 融合参数 k（默认 60） */
+  rrfK?: number;
+  /** 向量搜索权重（0~1，默认 0.7） */
+  vectorWeight?: number;
+  /** 全文搜索权重（0~1，默认 0.3） */
+  ftsWeight?: number;
 }
 
 // ─── 通用查询选项 ──────────────────────────────────────────────────────────────
@@ -197,6 +214,14 @@ export interface MemoryStore {
     query: string,
     options: TextSearchOptions
   ): Promise<Array<T & { _score: number }>>;
+
+  // 混合搜索（向量 + 全文）
+  hybridSearch<T extends AnyEntry>(
+    table: TableName,
+    text: string,
+    vector: Float32Array,
+    options: HybridSearchOptions
+  ): Promise<Array<T & { _score: number; _vectorScore: number; _ftsScore: number }>>;
 
   // 条件查询
   query<T extends AnyEntry>(

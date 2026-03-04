@@ -4,6 +4,7 @@ import { buildWhereClause, sqlLiteral } from "./filter";
 import type {
   AnyEntry,
   FilterExpression,
+  HybridSearchOptions,
   MemoryStore,
   QueryOptions,
   TableName,
@@ -253,6 +254,27 @@ export class SQLiteStore implements MemoryStore {
       const row = this.deserializeRow<T>(r as Record<string, unknown>);
       return { ...row, _score: 1 } as T & { _score: number };
     });
+  }
+
+  // ─── hybridSearch（SQLite 降级：仅 textSearch） ─────────────────────────────
+
+  async hybridSearch<T extends AnyEntry>(
+    table: TableName,
+    text: string,
+    _vector: Float32Array,
+    options: HybridSearchOptions
+  ): Promise<Array<T & { _score: number; _vectorScore: number; _ftsScore: number }>> {
+    // SQLite 不支持向量搜索，降级为纯文本搜索
+    const textResults = await this.textSearch<T>(table, text, {
+      topK: options.topK,
+      fields: options.ftsFields,
+    });
+
+    return textResults.map((r) => ({
+      ...r,
+      _vectorScore: 0,
+      _ftsScore: r._score,
+    }));
   }
 
   // ─── query ───────────────────────────────────────────────────────────────
