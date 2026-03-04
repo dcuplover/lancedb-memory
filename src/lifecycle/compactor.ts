@@ -19,7 +19,7 @@ import type {
   SyncResult,
   ConflictEntry,
 } from "./types";
-import type { MemoryStore, STMEntry, EpisodicEntry, KnowledgeEntry, FilterExpression } from "../store/types";
+import type { MemoryStore, STMEntry, EpisodicEntry, KnowledgeEntry, FilterExpression, EmbeddingProvider } from "../store/types";
 import type { Logger } from "../types/evidence";
 import { sha256Hex } from "../utils/hash";
 
@@ -52,7 +52,8 @@ export function createCompactor(
   store: MemoryStore,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   api: any,  // OpenClaw API
-  logger?: Logger
+  logger?: Logger,
+  embeddingProvider?: EmbeddingProvider
 ): Compactor {
   let lastReport: CompactionReport | null = null;
   let scheduledTimer: ReturnType<typeof setInterval> | null = null;
@@ -461,7 +462,12 @@ ${eventsText}
     });
 
     const parsed = JSON.parse(response);
-    const vector = await llmApi.services.embedding.embed(parsed.summary);
+    let vector: number[] | Float32Array;
+    if (embeddingProvider) {
+      vector = await embeddingProvider.embed(parsed.summary);
+    } else {
+      vector = await llmApi.services.embedding.embed(parsed.summary);
+    }
 
     return {
       text: parsed.summary,

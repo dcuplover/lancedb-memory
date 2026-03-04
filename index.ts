@@ -23,6 +23,7 @@ import type { Compactor } from "./src/lifecycle/types";
 import { parseConfig } from "./src/config";
 import { registerTools } from "./src/tools";
 import { registerCli } from "./src/cli";
+import { createEmbeddingProvider } from "./src/utils/embedding";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OpenClaw 插件定义
@@ -75,27 +76,17 @@ const definition = {
     }
 
     // ── 5. 初始化 MOD4：Retriever ─────────────────────────────────────────
+    // 创建 EmbeddingProvider —— 使用配置的 baseURL / apiKey / model / dimensions
+    const embeddingProvider: EmbeddingProvider = createEmbeddingProvider({
+      apiKey: config.embedding.apiKey,
+      baseURL: config.embedding.baseURL!,
+      model: config.embedding.model!,
+      dimensions: config.embedding.dimensions!,
+    });
+
     let retriever: Retriever | undefined;
     if (store) {
       try {
-        // 创建 EmbeddingProvider 适配器
-        const embeddingProvider: EmbeddingProvider = {
-          embed: async (text: string) => {
-            if (api.services?.embedding?.embed) {
-              const result = await api.services.embedding.embed(text);
-              return new Float32Array(result);
-            }
-            throw new Error("Embedding service not available");
-          },
-          embedBatch: async (texts: string[]) => {
-            if (api.services?.embedding?.embedBatch) {
-              const results = await api.services.embedding.embedBatch(texts);
-              return results.map((r: number[]) => new Float32Array(r));
-            }
-            throw new Error("Embedding service not available");
-          },
-          dimension: config.vectorDimension,
-        };
 
         retriever = createRetriever(config.retriever, store, embeddingProvider, api.log,
           // 条件创建 RerankProvider
@@ -117,7 +108,7 @@ const definition = {
     let compactor: Compactor | undefined;
     if (store) {
       try {
-        compactor = createCompactor(config.compactor, store, api, api.log);
+        compactor = createCompactor(config.compactor, store, api, api.log, embeddingProvider);
         api.log.info("[memory] Compactor 初始化完成");
 
         // 启动定时压缩
