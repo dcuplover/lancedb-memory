@@ -83,7 +83,7 @@ export function parseConfig(raw: unknown): PluginConfig {
   const embedding = (input.embedding as Record<string, unknown>) || {};
   if (!embedding.apiKey) {
     throw new Error(
-      "[memory-lancedb] FATAL: embedding.apiKey is required in plugin config"
+      "[memory-4layer] FATAL: embedding.apiKey is required in plugin config"
     );
   }
 

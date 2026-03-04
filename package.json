@@ -1,5 +1,5 @@
 {
-  "name": "memory-lancedb",
+  "name": "memory-4layer",
   "version": "1.0.0",
   "description": "STM/Episodic/Knowledge/Structural 四层记忆系统 - OpenClaw 插件",
   "main": "dist/index.js",
@@ -18,7 +18,7 @@
     "uuid": "^9.0.1"
   },
   "peerDependencies": {
-    "openclaw": "^1.0.0"
+    "openclaw": "*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",
