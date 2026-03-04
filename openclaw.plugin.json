@@ -1,0 +1,156 @@
+{
+  "name": "memory-four-layer",
+  "version": "1.0.0",
+  "displayName": "四层记忆系统",
+  "description": "STM/Episodic/Knowledge/Structural 四层记忆架构，基于 LanceDB 本地向量存储",
+  "author": "YourName",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "slots": ["memory"],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enabled": { "type": "boolean", "default": true },
+      "autoCapture": { "type": "boolean", "default": true },
+      "autoRecall": { "type": "boolean", "default": true },
+      "collector": {
+        "type": "object",
+        "properties": {
+          "maxLogChars": { "type": "number", "default": 800 },
+          "dedupeWindowMs": { "type": "number", "default": 300000 },
+          "minMessageLength": { "type": "number", "default": 5 },
+          "minMessageLengthCJK": { "type": "number", "default": 3 },
+          "maxEvidencePerAgentEnd": { "type": "number", "default": 10 },
+          "compactionSnapshotMessages": { "type": "number", "default": 20 },
+          "excludeTools": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["memory_recall", "memory_store", "memory_forget"]
+          },
+          "redactKeys": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["apiKey", "token", "password", "secret"]
+          }
+        }
+      },
+      "layers": {
+        "type": "object",
+        "properties": {
+          "stm": {
+            "type": "object",
+            "properties": {
+              "ttlMs": { "type": "number", "default": 3600000 },
+              "maxEntries": { "type": "number", "default": 500 }
+            }
+          },
+          "episodic": {
+            "type": "object",
+            "properties": {
+              "retentionDays": { "type": "number", "default": 30 },
+              "maxEntries": { "type": "number", "default": 10000 }
+            }
+          },
+          "knowledge": {
+            "type": "object",
+            "properties": {
+              "maxEntries": { "type": "number", "default": 2000 },
+              "syncToMemoryMd": { "type": "boolean", "default": true }
+            }
+          },
+          "structural": {
+            "type": "object",
+            "properties": {
+              "maxEntities": { "type": "number", "default": 1000 },
+              "maxRelations": { "type": "number", "default": 5000 }
+            }
+          }
+        }
+      },
+      "compaction": {
+        "type": "object",
+        "properties": {
+          "intervalHours": { "type": "number", "default": 1 },
+          "stmMaxEntries": { "type": "number", "default": 500 },
+          "episodicRetentionDays": { "type": "number", "default": 30 },
+          "knowledgeMergeSimilarityThreshold": { "type": "number", "default": 0.92 },
+          "memoryMdMaxTokens": { "type": "number", "default": 10000 }
+        }
+      },
+      "retrieval": {
+        "type": "object",
+        "properties": {
+          "topK": { "type": "number", "default": 10 },
+          "minScore": { "type": "number", "default": 0.3 },
+          "rerankEnabled": { "type": "boolean", "default": false },
+          "timeoutMs": { "type": "number", "default": 5000 }
+        }
+      },
+      "embedding": {
+        "type": "object",
+        "properties": {
+          "apiKey": { "type": "string" },
+          "model": { "type": "string", "default": "text-embedding-3-small" },
+          "baseURL": { "type": "string", "default": "https://api.openai.com/v1" },
+          "dimensions": { "type": "number", "default": 1536 }
+        },
+        "required": ["apiKey"]
+      },
+      "dbPath": { "type": "string", "default": "~/.openclaw/memory-db" }
+    },
+    "required": ["embedding"],
+    "additionalProperties": false
+  },
+  "uiHints": {
+    "embedding.apiKey": { 
+      "label": "Embedding API Key", 
+      "sensitive": true,
+      "placeholder": "sk-...",
+      "description": "OpenAI API Key 用于向量嵌入"
+    },
+    "embedding.model": {
+      "label": "嵌入模型",
+      "description": "向量嵌入模型名称",
+      "advanced": true
+    },
+    "embedding.baseURL": {
+      "label": "API Base URL",
+      "description": "自定义 API 端点（可选）",
+      "advanced": true
+    },
+    "dbPath": { 
+      "label": "数据库路径", 
+      "description": "LanceDB 本地存储路径，支持 ~ 扩展"
+    },
+    "autoCapture": {
+      "label": "自动采集",
+      "description": "是否自动采集 Hook 事件到记忆系统"
+    },
+    "autoRecall": {
+      "label": "自动召回",
+      "description": "是否在 Agent 启动前自动注入相关记忆"
+    },
+    "collector.maxLogChars": {
+      "label": "最大日志字符数",
+      "description": "工具调用日志截断长度",
+      "advanced": true
+    },
+    "collector.dedupeWindowMs": {
+      "label": "去重窗口（毫秒）",
+      "description": "事件去重时间窗口",
+      "advanced": true
+    },
+    "compaction.intervalHours": {
+      "label": "压缩间隔（小时）",
+      "description": "定时压缩任务的触发间隔"
+    },
+    "retrieval.topK": {
+      "label": "检索数量",
+      "description": "默认返回的记忆条目数"
+    },
+    "retrieval.minScore": {
+      "label": "最低分数阈值",
+      "description": "记忆检索的最低相似度分数（0-1）"
+    }
+  }
+}
