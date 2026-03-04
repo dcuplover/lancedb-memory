@@ -30,7 +30,7 @@ import { createEmbeddingProvider } from "./src/utils/embedding";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const definition = {
-  id: "memory-four-layer",
+  id: "memory-lancedb",
   name: "四层记忆系统",
   kind: "memory",
 
@@ -333,7 +333,7 @@ const definition = {
       }
     }
 
-    api.log.info("[memory-four-layer] 插件初始化完成 (MOD1-MOD6 全部就绪)");
+    api.log.info("[memory-lancedb] 插件初始化完成 (MOD1-MOD6 全部就绪)");
   },
 };
 

@@ -1,5 +1,5 @@
 {
-  "name": "memory-four-layer",
+  "name": "memory-lancedb",
   "version": "1.0.0",
   "description": "STM/Episodic/Knowledge/Structural 四层记忆系统 - OpenClaw 插件",
   "main": "dist/index.js",

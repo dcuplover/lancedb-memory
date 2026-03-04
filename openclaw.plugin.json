@@ -1,7 +1,7 @@
 {
-  "name": "memory-four-layer",
+  "id": "memory-lancedb",
+  "name": "四层记忆系统",
   "version": "1.0.0",
-  "displayName": "四层记忆系统",
   "description": "STM/Episodic/Knowledge/Structural 四层记忆架构，基于 LanceDB 本地向量存储",
   "author": "YourName",
   "license": "MIT",
