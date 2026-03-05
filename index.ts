@@ -36,42 +36,49 @@ const definition = {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   register: async (api: any) => {
+    // ── 安全 logger 包装器（防止 api.log 为 undefined 时崩溃） ────────────
+    const log = {
+      info: (...args: unknown[]) => api.log?.info?.(...args),
+      warn: (...args: unknown[]) => api.log?.warn?.(...args),
+      error: (...args: unknown[]) => api.log?.error?.(...args),
+    };
+
     // ── 1. 解析并验证配置 ─────────────────────────────────────────────────
     let config;
     try {
       config = parseConfig(api.pluginConfig);
     } catch (err) {
-      api.log.error("[memory] 配置解析失败：", err);
+      log.error("[memory] 配置解析失败：", err);
       throw err;
     }
 
     if (!config.enabled) {
-      api.log.info("[memory] 插件已禁用");
+      log.info("[memory] 插件已禁用");
       return;
     }
 
     const { autoCapture, autoRecall } = config;
 
     // ── 2. 初始化 MOD1：EventCollector ────────────────────────────────────
-    const collector = createEventCollector(config.collector, api.log);
+    const collector = createEventCollector(config.collector, log);
 
     // ── 3. 初始化 MOD2：MemoryStore ───────────────────────────────────────
     let store: MemoryStore | undefined;
     try {
-      store = await initializeStore({ dbPath: config.dbPath, ...config.store }, api.log);
-      api.log.info("[memory] MemoryStore 初始化完成");
+      store = await initializeStore({ dbPath: config.dbPath, ...config.store }, log);
+      log.info("[memory] MemoryStore 初始化完成");
     } catch (err) {
-      api.log.error("[memory] MemoryStore 初始化失败，运行于无持久化模式：", err);
+      log.error("[memory] MemoryStore 初始化失败，运行于无持久化模式：", err);
     }
 
     // ── 4. 初始化 MOD3：LayerRouter ───────────────────────────────────────
     let router: LayerRouter | undefined;
     if (store) {
       try {
-        router = createLayerRouter(config.router, store, api, api.log);
-        api.log.info("[memory] LayerRouter 初始化完成");
+        router = createLayerRouter(config.router, store, api, log);
+        log.info("[memory] LayerRouter 初始化完成");
       } catch (err) {
-        api.log.error("[memory] LayerRouter 初始化失败：", err);
+        log.error("[memory] LayerRouter 初始化失败：", err);
       }
     }
 
@@ -88,7 +95,7 @@ const definition = {
     if (store) {
       try {
 
-        retriever = createRetriever(config.retriever, store, embeddingProvider, api.log,
+        retriever = createRetriever(config.retriever, store, embeddingProvider, log,
           // 条件创建 RerankProvider
           config.retriever.rerankEnabled && config.rerank?.apiKey
             ? createRerankProvider({
@@ -98,9 +105,9 @@ const definition = {
               })
             : undefined
         );
-        api.log.info(`[memory] Retriever 初始化完成${config.retriever.rerankEnabled ? "（Re-ranker 已启用）" : ""}`);
+        log.info(`[memory] Retriever 初始化完成${config.retriever.rerankEnabled ? "（Re-ranker 已启用）" : ""}`);
       } catch (err) {
-        api.log.error("[memory] Retriever 初始化失败：", err);
+        log.error("[memory] Retriever 初始化失败：", err);
       }
     }
 
@@ -108,20 +115,20 @@ const definition = {
     let compactor: Compactor | undefined;
     if (store) {
       try {
-        compactor = createCompactor(config.compactor, store, api, api.log, embeddingProvider);
-        api.log.info("[memory] Compactor 初始化完成");
+        compactor = createCompactor(config.compactor, store, api, log, embeddingProvider);
+        log.info("[memory] Compactor 初始化完成");
 
         // 启动定时压缩
         const intervalMs = config.compactor.compaction.intervalMs;
         if (intervalMs > 0) {
           setInterval(() => {
             compactor!.runFull().catch((err: unknown) => {
-              api.log.warn("[memory] 定时压缩失败：", err);
+              log.warn("[memory] 定时压缩失败：", err);
             });
           }, intervalMs);
         }
       } catch (err) {
-        api.log.error("[memory] Compactor 初始化失败：", err);
+        log.error("[memory] Compactor 初始化失败：", err);
       }
     }
 
@@ -140,10 +147,10 @@ const definition = {
             for (const pack of packs) {
               await router.route(pack);
             }
-            api.log.info(`[memory] after_tool_call → ${packs.length} pack(s) routed`);
+            log.info(`[memory] after_tool_call → ${packs.length} pack(s) routed`);
           }
         } catch (err) {
-          api.log.error("[memory] after_tool_call hook 异常：", err);
+          log.error("[memory] after_tool_call hook 异常：", err);
         }
       });
 
@@ -160,7 +167,7 @@ const definition = {
             for (const pack of packs) {
               await router.route(pack);
             }
-            api.log.info(`[memory] agent_end → ${packs.length} pack(s) routed`);
+            log.info(`[memory] agent_end → ${packs.length} pack(s) routed`);
           }
 
           // 阈值检查：STM 条目数超限时触发压缩
@@ -169,16 +176,16 @@ const definition = {
             const maxEntries = config.compactor.stm.maxEntries;
 
             if (stats.activeCount > maxEntries * 1.2) {
-              api.log.info(
+              log.info(
                 `[memory] STM 超限 (${stats.activeCount} > ${maxEntries * 1.2})，触发压缩`
               );
               await compactor.runFull().catch((err: unknown) => {
-                api.log.warn("[memory] 阈值触发压缩失败：", err);
+                log.warn("[memory] 阈值触发压缩失败：", err);
               });
             }
           }
         } catch (err) {
-          api.log.error("[memory] agent_end hook 异常：", err);
+          log.error("[memory] agent_end hook 异常：", err);
         }
       });
 
@@ -195,17 +202,17 @@ const definition = {
             for (const pack of packs) {
               await router.route(pack);
             }
-            api.log.info(`[memory] before_compaction → ${packs.length} pack(s) routed`);
+            log.info(`[memory] before_compaction → ${packs.length} pack(s) routed`);
           }
 
           // 触发压缩
           if (compactor) {
             await compactor.runFull().catch((err: unknown) => {
-              api.log.warn("[memory] before_compaction 压缩失败：", err);
+              log.warn("[memory] before_compaction 压缩失败：", err);
             });
           }
         } catch (err) {
-          api.log.error("[memory] before_compaction hook 异常：", err);
+          log.error("[memory] before_compaction hook 异常：", err);
         }
       });
 
@@ -222,10 +229,10 @@ const definition = {
             for (const pack of packs) {
               await router.route(pack);
             }
-            api.log.info(`[memory] command:new → ${packs.length} pack(s) routed`);
+            log.info(`[memory] command:new → ${packs.length} pack(s) routed`);
           }
         } catch (err) {
-          api.log.error("[memory] command:new hook 异常：", err);
+          log.error("[memory] command:new hook 异常：", err);
         }
       });
     }
@@ -240,7 +247,7 @@ const definition = {
           const query = lastUserMsg?.content ?? "";
 
           if (!query) {
-            api.log.info("[memory] before_agent_start → 无查询内容，跳过 autoRecall");
+            log.info("[memory] before_agent_start → 无查询内容，跳过 autoRecall");
             return;
           }
 
@@ -252,12 +259,12 @@ const definition = {
             const memoryContext = formatMemoriesForContext(result.entries);
             payload.systemPromptExtra =
               ((payload.systemPromptExtra as string) ?? "") + "\n\n" + memoryContext;
-            api.log.info(`[memory] before_agent_start → 注入 ${result.entries.length} 条相关记忆`);
+            log.info(`[memory] before_agent_start → 注入 ${result.entries.length} 条相关记忆`);
           } else {
-            api.log.info("[memory] before_agent_start → 未找到相关记忆");
+            log.info("[memory] before_agent_start → 未找到相关记忆");
           }
         } catch (err) {
-          api.log.error("[memory] before_agent_start autoRecall 异常：", err);
+          log.error("[memory] before_agent_start autoRecall 异常：", err);
         }
       });
     }
@@ -266,11 +273,11 @@ const definition = {
     if (store && retriever) {
       try {
         registerTools(api, { store, retriever });
-        api.log.info(
+        log.info(
           "[memory] Tools 已注册 (memory_recall, memory_store, memory_forget, memory_stats)"
         );
       } catch (err) {
-        api.log.error("[memory] Tools 注册失败：", err);
+        log.error("[memory] Tools 注册失败：", err);
       }
     }
 
@@ -278,9 +285,9 @@ const definition = {
     if (store && retriever && compactor) {
       try {
         registerCli(api, { store, retriever, compactor });
-        api.log.info("[memory] CLI 已注册 (search, stats, compact, export, import, conflicts)");
+        log.info("[memory] CLI 已注册 (search, stats, compact, export, import, conflicts)");
       } catch (err) {
-        api.log.error("[memory] CLI 注册失败：", err);
+        log.error("[memory] CLI 注册失败：", err);
       }
     }
 
@@ -327,13 +334,13 @@ const definition = {
             return stats;
           },
         });
-        api.log.info("[memory] Service API 已注册（供其他插件调用）");
+        log.info("[memory] Service API 已注册（供其他插件调用）");
       } catch (err) {
-        api.log.warn("[memory] Service API 注册失败（可能不支持）：", err);
+        log.warn("[memory] Service API 注册失败（可能不支持）：", err);
       }
     }
 
-    api.log.info("[memory-4layer] 插件初始化完成 (MOD1-MOD6 全部就绪)");
+    log.info("[memory-4layer] 插件初始化完成 (MOD1-MOD6 全部就绪)");
   },
 };
 
