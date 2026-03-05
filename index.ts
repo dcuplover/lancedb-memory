@@ -323,7 +323,12 @@ const definition = {
 
     // ── 9. 注册 Tools（模型 function call） ───────────────────────────────
     try {
-      registerTools(api, { getStore, getRetriever });
+      registerTools(api, {
+        getStore,
+        getRetriever,
+        embed: (text: string) => embeddingProvider.embed(text),
+        vectorDimension: config.embedding.dimensions ?? 1536,
+      });
       log.info(
         "[memory] Tools 已注册 (memory_recall, memory_store, memory_forget, memory_stats)"
       );

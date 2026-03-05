@@ -114,7 +114,7 @@ export class LanceDBStore implements MemoryStore {
       const indices = Array.isArray(existingIndices) ? existingIndices : [];
       for (const field of fields) {
         const hasIndex = indices.some(
-          (idx) => idx.indexType === "FTS" && idx.columns?.includes(field)
+          (idx) => idx != null && idx.indexType === "FTS" && idx.columns?.includes(field)
         );
         if (hasIndex) continue;
 
@@ -564,6 +564,8 @@ export class LanceDBStore implements MemoryStore {
         row[k] = v;
       }
     }
+    // 防御性：确保 vector 字段存在且不为 undefined（用零向量填充）
+    row[VECTOR_COLUMN] = row[VECTOR_COLUMN] ?? new Array<number>(this.config.vectorDimension).fill(0);
     return row;
   }
 }

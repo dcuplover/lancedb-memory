@@ -19,6 +19,10 @@ const writeLimiter = new SlidingWindowLimiter(20, 5 * 60 * 1000);
 export interface ToolDependencies {
   getStore: () => Promise<MemoryStore | undefined>;
   getRetriever: () => Promise<Retriever | undefined>;
+  /** 可选：为文本生成嵌入向量（用于 memory_store 写入带 vector 的记录） */
+  embed?: (text: string) => Promise<Float32Array>;
+  /** 可选：向量维度（用于 embed 失败时生成零向量降级，默认 1536） */
+  vectorDimension?: number;
 }
 
 // ─── registerTools 主函数 ─────────────────────────────────────────────────────
@@ -31,7 +35,7 @@ export interface ToolDependencies {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerTools(api: any, deps: ToolDependencies): void {
-  const { getStore, getRetriever } = deps;
+  const { getStore, getRetriever, embed, vectorDimension = 1536 } = deps;
 
   // ────────────────────────────────────────────────────────────────────────────
   // memory_recall: 检索相关记忆
@@ -162,12 +166,27 @@ export function registerTools(api: any, deps: ToolDependencies): void {
           const category = (params.category as string) || "fact";
           const key = (params.key as string) || generateKey(content, category);
 
+          // 生成 embedding 向量（失败时降级为零向量）
+          let vector: number[];
+          try {
+            if (embed) {
+              const float32 = await embed(content);
+              vector = Array.from(float32);
+            } else {
+              vector = new Array<number>(vectorDimension).fill(0);
+            }
+          } catch (embedErr) {
+            api.log?.warn?.(`[memory_store] Embedding generation failed (content length: ${content.length}), using zero vector:`, embedErr);
+            vector = new Array<number>(vectorDimension).fill(0);
+          }
+
           // 构造 Knowledge Entry
           const entry: Partial<KnowledgeEntry> = {
             id: uuidv4(),
             key,
             category: category as KnowledgeEntry["category"],
             claim: content,
+            vector,
             confidence: 0.9,
             version: 1,
             createdAt: Date.now(),
