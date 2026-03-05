@@ -36,12 +36,16 @@ const definition = {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   register: (api: any) => {
+    const pluginTag = "[memory-4layer]";
+
     // ── 安全 logger 包装器（防止 api.log 为 undefined 时崩溃） ────────────
     const log = {
-      info: (...args: unknown[]) => api.log?.info?.(...args),
-      warn: (...args: unknown[]) => api.log?.warn?.(...args),
-      error: (...args: unknown[]) => api.log?.error?.(...args),
+      info: (...args: unknown[]) => api.log?.info?.(pluginTag, ...args),
+      warn: (...args: unknown[]) => api.log?.warn?.(pluginTag, ...args),
+      error: (...args: unknown[]) => api.log?.error?.(pluginTag, ...args),
     };
+
+    log.info("插件注册开始");
 
     // ── 1. 解析并验证配置 ─────────────────────────────────────────────────
     let config;
@@ -51,6 +55,12 @@ const definition = {
       log.error("[memory] 配置解析失败：", err);
       throw err;
     }
+    log.info("配置解析完成", {
+      enabled: config.enabled,
+      autoCapture: config.autoCapture,
+      autoRecall: config.autoRecall,
+      registrationOnly: config.registrationOnly,
+    });
 
     if (!config.enabled) {
       log.info("[memory] 插件已禁用");
@@ -59,6 +69,7 @@ const definition = {
 
     // 仅注册模式：用于联调 Tool/CLI 注册链路，避免初始化后续模块。
     if (config.registrationOnly) {
+      log.info("进入 registrationOnly 模式，仅注册 Tools/CLI");
       const getStore = async (): Promise<undefined> => undefined;
       const getRetriever = async (): Promise<undefined> => undefined;
       const getCompactor = async (): Promise<undefined> => undefined;
@@ -112,6 +123,7 @@ const definition = {
       if (initDone) return Promise.resolve();
       if (!initPromise) {
         initPromise = (async () => {
+          log.info("开始初始化核心模块（MOD2-MOD5）");
           // ── 3. 初始化 MOD2：MemoryStore ─────────────────────────────────
           try {
             store = await initializeStore({ dbPath: config.dbPath, ...config.store }, log);
@@ -202,10 +214,12 @@ const definition = {
     };
 
     // 立刻触发初始化（fire-and-forget，不阻塞 register）
+    log.info("触发异步初始化任务（fire-and-forget）");
     ensureInitialized();
 
     // ── 7. 自动采集 Hooks（autoCapture） ──────────────────────────────────
     if (autoCapture) {
+      log.info("注册 autoCapture hooks: after_tool_call, agent_end, before_compaction, command:new");
       // after_tool_call → 采集工具调用
       api.on("after_tool_call", async (payload: Record<string, unknown>) => {
         try {
@@ -315,6 +329,7 @@ const definition = {
 
     // ── 8. 自动召回 Hook（autoRecall） ────────────────────────────────────
     if (autoRecall) {
+      log.info("注册 autoRecall hook: before_agent_start");
       api.on("before_agent_start", async (payload: Record<string, unknown>) => {
         try {
           await ensureInitialized();
@@ -376,6 +391,7 @@ const definition = {
 
     // ── 11. 可选：注册 Service API（供其他插件调用） ──────────────────────
     if (typeof api.registerService === "function") {
+      log.info("检测到 registerService 能力，开始注册 Service API");
       try {
         api.registerService("memory", {
           recall: async (query: string, options?: Record<string, unknown>) => {
