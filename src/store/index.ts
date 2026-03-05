@@ -35,13 +35,24 @@ function sleep(ms: number): Promise<void> {
 
 // ─── LanceDB 初始化 ───────────────────────────────────────────────────────────
 
+const LANCEDB_CONNECT_TIMEOUT_MS = 5000;
+
 async function tryInitLance(
   dbPath: string,
   config: StoreConfig,
   logger?: Logger
 ): Promise<LanceDBStore> {
   const lancedb = await import("@lancedb/lancedb");
-  const db = await lancedb.connect(dbPath);
+
+  const db = await Promise.race([
+    lancedb.connect(dbPath),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`LanceDB connect timeout after ${LANCEDB_CONNECT_TIMEOUT_MS}ms: ${dbPath}`)),
+        LANCEDB_CONNECT_TIMEOUT_MS
+      )
+    ),
+  ]);
 
   // 确保所有表存在
   for (const tableName of TABLE_NAMES) {

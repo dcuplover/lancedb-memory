@@ -17,8 +17,8 @@ const writeLimiter = new SlidingWindowLimiter(20, 5 * 60 * 1000);
 // ─── Tool 注册依赖接口 ────────────────────────────────────────────────────────
 
 export interface ToolDependencies {
-  store: MemoryStore;
-  retriever: Retriever;
+  getStore: () => Promise<MemoryStore | undefined>;
+  getRetriever: () => Promise<Retriever | undefined>;
 }
 
 // ─── registerTools 主函数 ─────────────────────────────────────────────────────
@@ -27,11 +27,11 @@ export interface ToolDependencies {
  * 注册所有 Tool 到 OpenClaw 插件 API。
  *
  * @param api   OpenClaw 插件 API 对象
- * @param deps  依赖项（store, retriever）
+ * @param deps  依赖项（getStore, getRetriever getter 函数，延迟初始化）
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerTools(api: any, deps: ToolDependencies): void {
-  const { store, retriever } = deps;
+  const { getStore, getRetriever } = deps;
 
   // ────────────────────────────────────────────────────────────────────────────
   // memory_recall: 检索相关记忆
@@ -65,6 +65,11 @@ export function registerTools(api: any, deps: ToolDependencies): void {
         try {
           // 输入校验
           validateInput({ query: params.query as string });
+
+          const retriever = await getRetriever();
+          if (!retriever) {
+            return { success: false, memories: [], error: "Memory system not initialized" };
+          }
 
           const query: RetrievalQuery = {
             text: params.query as string,
@@ -147,6 +152,11 @@ export function registerTools(api: any, deps: ToolDependencies): void {
           if (!writeLimiter.canProceed()) {
             api.log?.warn?.("[memory_store] Rate limit exceeded");
             return { success: false, error: "Rate limit exceeded (max 20 writes per 5 min)" };
+          }
+
+          const store = await getStore();
+          if (!store) {
+            return { success: false, error: "Memory system not initialized" };
           }
 
           const category = (params.category as string) || "fact";
@@ -237,6 +247,11 @@ export function registerTools(api: any, deps: ToolDependencies): void {
             return { success: false, error: "Must provide either key or id" };
           }
 
+          const store = await getStore();
+          if (!store) {
+            return { success: false, error: "Memory system not initialized" };
+          }
+
           // 通过 key 查找
           if (key) {
             const entry = await withTimeout(
@@ -283,6 +298,11 @@ export function registerTools(api: any, deps: ToolDependencies): void {
       parameters: Type.Object({}),
       execute: async (_toolCallId: string, _params: Record<string, unknown>) => {
         try {
+          const store = await getStore();
+          if (!store) {
+            return { success: false, error: "Memory system not initialized" };
+          }
+
           const tables = ["stm", "episodic", "knowledge", "entities", "relations"] as const;
           const stats: Record<string, unknown> = {};
 

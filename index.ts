@@ -17,7 +17,7 @@ import type { HookContext } from "./src/types/evidence";
 import type { LayerRouter } from "./src/pipeline/router";
 import { createRetriever } from "./src/retrieval/retriever";
 import { createRerankProvider } from "./src/retrieval/reranker";
-import type { Retriever, RetrievedEntry, RerankProvider } from "./src/retrieval/types";
+import type { Retriever, RetrievedEntry } from "./src/retrieval/types";
 import { createCompactor } from "./src/lifecycle/compactor";
 import type { Compactor } from "./src/lifecycle/types";
 import { parseConfig } from "./src/config";
@@ -35,7 +35,7 @@ const definition = {
   kind: "memory",
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  register: async (api: any) => {
+  register: (api: any) => {
     // ── 安全 logger 包装器（防止 api.log 为 undefined 时崩溃） ────────────
     const log = {
       info: (...args: unknown[]) => api.log?.info?.(...args),
@@ -59,31 +59,10 @@ const definition = {
 
     const { autoCapture, autoRecall } = config;
 
-    // ── 2. 初始化 MOD1：EventCollector ────────────────────────────────────
+    // ── 2. 初始化 MOD1：EventCollector（同步） ────────────────────────────
     const collector = createEventCollector(config.collector, log);
 
-    // ── 3. 初始化 MOD2：MemoryStore ───────────────────────────────────────
-    let store: MemoryStore | undefined;
-    try {
-      store = await initializeStore({ dbPath: config.dbPath, ...config.store }, log);
-      log.info("[memory] MemoryStore 初始化完成");
-    } catch (err) {
-      log.error("[memory] MemoryStore 初始化失败，运行于无持久化模式：", err);
-    }
-
-    // ── 4. 初始化 MOD3：LayerRouter ───────────────────────────────────────
-    let router: LayerRouter | undefined;
-    if (store) {
-      try {
-        router = createLayerRouter(config.router, store, api, log);
-        log.info("[memory] LayerRouter 初始化完成");
-      } catch (err) {
-        log.error("[memory] LayerRouter 初始化失败：", err);
-      }
-    }
-
-    // ── 5. 初始化 MOD4：Retriever ─────────────────────────────────────────
-    // 创建 EmbeddingProvider —— 使用配置的 baseURL / apiKey / model / dimensions
+    // ── 创建 EmbeddingProvider（同步） ────────────────────────────────────
     const embeddingProvider: EmbeddingProvider = createEmbeddingProvider({
       apiKey: config.embedding.apiKey,
       baseURL: config.embedding.baseURL!,
@@ -91,52 +70,116 @@ const definition = {
       dimensions: config.embedding.dimensions!,
     });
 
+    // ── 延迟初始化重型异步组件 ─────────────────────────────────────────────
+    let store: MemoryStore | undefined;
+    let router: LayerRouter | undefined;
     let retriever: Retriever | undefined;
-    if (store) {
-      try {
-
-        retriever = createRetriever(config.retriever, store, embeddingProvider, log,
-          // 条件创建 RerankProvider
-          config.retriever.rerankEnabled && config.rerank?.apiKey
-            ? createRerankProvider({
-                baseURL: config.rerank.baseURL || config.retriever.rerankBaseURL || "https://api.cohere.ai/v1",
-                apiKey: config.rerank.apiKey,
-                model: config.rerank.model || config.retriever.rerankModel,
-              })
-            : undefined
-        );
-        log.info(`[memory] Retriever 初始化完成${config.retriever.rerankEnabled ? "（Re-ranker 已启用）" : ""}`);
-      } catch (err) {
-        log.error("[memory] Retriever 初始化失败：", err);
-      }
-    }
-
-    // ── 6. 初始化 MOD5：Compactor ─────────────────────────────────────────
     let compactor: Compactor | undefined;
-    if (store) {
-      try {
-        compactor = createCompactor(config.compactor, store, api, log, embeddingProvider);
-        log.info("[memory] Compactor 初始化完成");
+    let initPromise: Promise<void> | null = null;
+    let initDone = false;
 
-        // 启动定时压缩
-        const intervalMs = config.compactor.compaction.intervalMs;
-        if (intervalMs > 0) {
-          setInterval(() => {
-            compactor!.runFull().catch((err: unknown) => {
-              log.warn("[memory] 定时压缩失败：", err);
-            });
-          }, intervalMs);
-        }
-      } catch (err) {
-        log.error("[memory] Compactor 初始化失败：", err);
+    const ensureInitialized = (): Promise<void> => {
+      if (initDone) return Promise.resolve();
+      if (!initPromise) {
+        initPromise = (async () => {
+          // ── 3. 初始化 MOD2：MemoryStore ─────────────────────────────────
+          try {
+            store = await initializeStore({ dbPath: config.dbPath, ...config.store }, log);
+            log.info("[memory] MemoryStore 初始化完成");
+          } catch (err) {
+            log.error("[memory] MemoryStore 初始化失败，运行于无持久化模式：", err);
+          }
+
+          // ── 4. 初始化 MOD3：LayerRouter ─────────────────────────────────
+          if (store) {
+            try {
+              router = createLayerRouter(config.router, store, api, log);
+              log.info("[memory] LayerRouter 初始化完成");
+            } catch (err) {
+              log.error("[memory] LayerRouter 初始化失败：", err);
+            }
+          }
+
+          // ── 5. 初始化 MOD4：Retriever ────────────────────────────────────
+          if (store) {
+            try {
+              retriever = createRetriever(
+                config.retriever,
+                store,
+                embeddingProvider,
+                log,
+                config.retriever.rerankEnabled && config.rerank?.apiKey
+                  ? createRerankProvider({
+                      baseURL:
+                        config.rerank.baseURL ||
+                        config.retriever.rerankBaseURL ||
+                        "https://api.cohere.ai/v1",
+                      apiKey: config.rerank.apiKey,
+                      model: config.rerank.model || config.retriever.rerankModel,
+                    })
+                  : undefined
+              );
+              log.info(
+                `[memory] Retriever 初始化完成${config.retriever.rerankEnabled ? "（Re-ranker 已启用）" : ""}`
+              );
+            } catch (err) {
+              log.error("[memory] Retriever 初始化失败：", err);
+            }
+          }
+
+          // ── 6. 初始化 MOD5：Compactor ────────────────────────────────────
+          if (store) {
+            try {
+              compactor = createCompactor(config.compactor, store, api, log, embeddingProvider);
+              log.info("[memory] Compactor 初始化完成");
+
+              // 启动定时压缩
+              const intervalMs = config.compactor.compaction.intervalMs;
+              if (intervalMs > 0) {
+                setInterval(() => {
+                  compactor?.runFull().catch((err: unknown) => {
+                    log.warn("[memory] 定时压缩失败：", err);
+                  });
+                }, intervalMs);
+              }
+            } catch (err) {
+              log.error("[memory] Compactor 初始化失败：", err);
+            }
+          }
+
+          initDone = true;
+          log.info("[memory-4layer] 插件初始化完成 (MOD1-MOD6 全部就绪)");
+        })().catch((err) => {
+          initDone = true; // 即使失败也标记完成，避免反复重试
+          log.error("[memory] 初始化失败：", err);
+        });
       }
-    }
+      return initPromise;
+    };
+
+    // getter 函数供 tools / cli / service API 使用
+    const getStore = async (): Promise<MemoryStore | undefined> => {
+      await ensureInitialized();
+      return store;
+    };
+    const getRetriever = async (): Promise<Retriever | undefined> => {
+      await ensureInitialized();
+      return retriever;
+    };
+    const getCompactor = async (): Promise<Compactor | undefined> => {
+      await ensureInitialized();
+      return compactor;
+    };
+
+    // 立刻触发初始化（fire-and-forget，不阻塞 register）
+    ensureInitialized();
 
     // ── 7. 自动采集 Hooks（autoCapture） ──────────────────────────────────
     if (autoCapture) {
       // after_tool_call → 采集工具调用
       api.on("after_tool_call", async (payload: Record<string, unknown>) => {
         try {
+          await ensureInitialized();
           const ctx = resolveContext(payload);
           const packs = collector.collectFromToolCall(
             payload as unknown as import("./src/types/evidence").AfterToolCallEvent,
@@ -157,6 +200,7 @@ const definition = {
       // agent_end → 采集本轮消息 + 阈值检查触发压缩
       api.on("agent_end", async (payload: Record<string, unknown>) => {
         try {
+          await ensureInitialized();
           const ctx = resolveContext(payload);
           const packs = collector.collectFromAgentEnd(
             payload as unknown as import("./src/types/evidence").AgentEndEvent,
@@ -192,6 +236,7 @@ const definition = {
       // before_compaction → 采集压缩前快照 + 触发压缩
       api.on("before_compaction", async (payload: Record<string, unknown>) => {
         try {
+          await ensureInitialized();
           const ctx = resolveContext(payload);
           const packs = collector.collectFromCompaction(
             payload as unknown as import("./src/types/evidence").CompactionEvent,
@@ -219,6 +264,7 @@ const definition = {
       // command:new → 采集新会话事件
       api.registerHook(["command:new"], async (ctx: Record<string, unknown>) => {
         try {
+          await ensureInitialized();
           const event = {
             previousSessionId: ctx.previousSessionId as string | undefined,
             messageCount: ctx.messageCount as number | undefined,
@@ -238,9 +284,15 @@ const definition = {
     }
 
     // ── 8. 自动召回 Hook（autoRecall） ────────────────────────────────────
-    if (autoRecall && retriever) {
+    if (autoRecall) {
       api.on("before_agent_start", async (payload: Record<string, unknown>) => {
         try {
+          await ensureInitialized();
+          if (!retriever) {
+            log.info("[memory] before_agent_start → Retriever 未就绪，跳过 autoRecall");
+            return;
+          }
+
           // 提取最后一条用户消息
           const messages = (payload.messages as Array<{ role: string; content: string }>) ?? [];
           const lastUserMsg = messages.filter((m) => m.role === "user").slice(-1)[0];
@@ -270,34 +322,35 @@ const definition = {
     }
 
     // ── 9. 注册 Tools（模型 function call） ───────────────────────────────
-    if (store && retriever) {
-      try {
-        registerTools(api, { store, retriever });
-        log.info(
-          "[memory] Tools 已注册 (memory_recall, memory_store, memory_forget, memory_stats)"
-        );
-      } catch (err) {
-        log.error("[memory] Tools 注册失败：", err);
-      }
+    try {
+      registerTools(api, { getStore, getRetriever });
+      log.info(
+        "[memory] Tools 已注册 (memory_recall, memory_store, memory_forget, memory_stats)"
+      );
+    } catch (err) {
+      log.error("[memory] Tools 注册失败：", err);
     }
 
     // ── 10. 注册 CLI（人类运维命令） ──────────────────────────────────────
-    if (store && retriever && compactor) {
-      try {
-        registerCli(api, { store, retriever, compactor });
-        log.info("[memory] CLI 已注册 (search, stats, compact, export, import, conflicts)");
-      } catch (err) {
-        log.error("[memory] CLI 注册失败：", err);
-      }
+    try {
+      registerCli(api, { getStore, getRetriever, getCompactor });
+      log.info("[memory] CLI 已注册 (search, stats, compact, export, import, conflicts)");
+    } catch (err) {
+      log.error("[memory] CLI 注册失败：", err);
     }
 
     // ── 11. 可选：注册 Service API（供其他插件调用） ──────────────────────
-    if (store && retriever && typeof api.registerService === "function") {
+    if (typeof api.registerService === "function") {
       try {
         api.registerService("memory", {
-          recall: async (query: string, options?: Record<string, unknown>) =>
-            retriever.retrieve({ text: query, ...(options || {}) }).then((r) => r.entries),
+          recall: async (query: string, options?: Record<string, unknown>) => {
+            const r = await getRetriever();
+            if (!r) throw new Error("Memory not initialized");
+            return r.retrieve({ text: query, ...(options || {}) }).then((res) => res.entries);
+          },
           store: async (content: string, category: string, key?: string) => {
+            const s = await getStore();
+            if (!s) throw new Error("Memory not initialized");
             const { v4: uuidv4 } = await import("uuid");
             const entry = {
               id: uuidv4(),
@@ -315,21 +368,25 @@ const definition = {
               ]),
               metadata: JSON.stringify({}),
             };
-            return store.upsert("knowledge", entry.key, entry as never);
+            return s.upsert("knowledge", entry.key, entry as never);
           },
           forget: async (key: string) => {
-            const entry = await store.getByKey("knowledge", key);
+            const s = await getStore();
+            if (!s) throw new Error("Memory not initialized");
+            const entry = await s.getByKey("knowledge", key);
             if (entry) {
-              await store.softDelete("knowledge", entry.id);
+              await s.softDelete("knowledge", entry.id);
               return true;
             }
             return false;
           },
           getStats: async () => {
+            const s = await getStore();
+            if (!s) throw new Error("Memory not initialized");
             const tables = ["stm", "episodic", "knowledge", "entities", "relations"] as const;
             const stats: Record<string, unknown> = {};
             for (const table of tables) {
-              stats[table] = await store.getStats(table);
+              stats[table] = await s.getStats(table);
             }
             return stats;
           },
@@ -339,8 +396,6 @@ const definition = {
         log.warn("[memory] Service API 注册失败（可能不支持）：", err);
       }
     }
-
-    log.info("[memory-4layer] 插件初始化完成 (MOD1-MOD6 全部就绪)");
   },
 };
 
