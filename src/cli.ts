@@ -11,9 +11,9 @@ import type { Compactor } from "./lifecycle/types";
 // ─── CLI 注册依赖接口 ─────────────────────────────────────────────────────────
 
 export interface CliDependencies {
-  store: MemoryStore;
-  retriever: Retriever;
-  compactor: Compactor;
+  getStore: () => Promise<MemoryStore | undefined>;
+  getRetriever: () => Promise<Retriever | undefined>;
+  getCompactor: () => Promise<Compactor | undefined>;
 }
 
 // ─── registerCli 主函数 ───────────────────────────────────────────────────────
@@ -22,11 +22,11 @@ export interface CliDependencies {
  * 注册所有 CLI 命令到 OpenClaw 插件 API。
  *
  * @param api   OpenClaw 插件 API 对象
- * @param deps  依赖项（store, retriever, compactor）
+ * @param deps  依赖项（getStore, getRetriever, getCompactor getter 函数，延迟初始化）
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerCli(api: any, deps: CliDependencies): void {
-  const { store, retriever, compactor } = deps;
+  const { getStore, getRetriever, getCompactor } = deps;
 
   api.registerCli(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,6 +44,12 @@ export function registerCli(api: any, deps: CliDependencies): void {
           try {
             const limit = parseInt(opts.limit || "10", 10);
             const layers = opts.layers ? opts.layers.split(",") : undefined;
+
+            const retriever = await getRetriever();
+            if (!retriever) {
+              console.error("记忆系统未初始化");
+              return;
+            }
 
             const result = await retriever.retrieve({
               text: query,
@@ -77,6 +83,12 @@ export function registerCli(api: any, deps: CliDependencies): void {
         .description("显示记忆系统统计信息")
         .action(async () => {
           try {
+            const store = await getStore();
+            if (!store) {
+              console.error("记忆系统未初始化");
+              return;
+            }
+
             const tables: TableName[] = ["stm", "episodic", "knowledge", "entities", "relations"];
 
             console.log("记忆系统统计：\n");
@@ -102,6 +114,12 @@ export function registerCli(api: any, deps: CliDependencies): void {
         .description("手动触发记忆压缩")
         .action(async () => {
           try {
+            const compactor = await getCompactor();
+            if (!compactor) {
+              console.error("记忆系统未初始化");
+              return;
+            }
+
             console.log("开始压缩...");
             const report = await compactor.runFull();
 
@@ -157,6 +175,12 @@ export function registerCli(api: any, deps: CliDependencies): void {
               return;
             }
 
+            const store = await getStore();
+            if (!store) {
+              console.error("记忆系统未初始化");
+              return;
+            }
+
             const entries = await store.query(layer as TableName, {});
             const fs = await import("fs/promises");
             await fs.writeFile(filePath, JSON.stringify(entries, null, 2), "utf-8");
@@ -180,6 +204,12 @@ export function registerCli(api: any, deps: CliDependencies): void {
           try {
             if (!["stm", "episodic", "knowledge", "entities", "relations"].includes(layer)) {
               console.error(`无效的层名称: ${layer}`);
+              return;
+            }
+
+            const store = await getStore();
+            if (!store) {
+              console.error("记忆系统未初始化");
               return;
             }
 
@@ -222,6 +252,12 @@ export function registerCli(api: any, deps: CliDependencies): void {
         .description("显示知识层的冲突条目")
         .action(async () => {
           try {
+            const compactor = await getCompactor();
+            if (!compactor) {
+              console.error("记忆系统未初始化");
+              return;
+            }
+
             const conflicts = await compactor.getConflicts();
 
             if (conflicts.length === 0) {
