@@ -21,6 +21,22 @@ type LanceConnection = any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type LanceTable = any;
 
+// ─── LanceDB 单例导入 ──────────────────────────────────────────────────────────
+
+let lancedbImportPromise: Promise<typeof import("@lancedb/lancedb")> | null = null;
+
+export async function loadLanceDB(): Promise<typeof import("@lancedb/lancedb")> {
+  if (!lancedbImportPromise) {
+    lancedbImportPromise = import("@lancedb/lancedb");
+  }
+  try {
+    return await lancedbImportPromise;
+  } catch (err) {
+    lancedbImportPromise = null; // 允许重试
+    throw new Error(`Failed to load LanceDB: ${String(err)}`, { cause: err });
+  }
+}
+
 // ─── 错误类型 ──────────────────────────────────────────────────────────────────
 
 export class DimensionMismatchError extends Error {
@@ -57,7 +73,16 @@ export class LanceDBStore implements MemoryStore {
     } catch {
       // 表不存在，用示例行创建
       const sample = getSampleRow(name, this.config.vectorDimension);
-      table = await this.db.createTable(name, [sample]);
+      try {
+        table = await this.db.createTable(name, [sample]);
+      } catch (createErr: unknown) {
+        // 竞态：另一个进程/调用已经创建了表
+        if (String(createErr).includes("already exists")) {
+          table = await this.db.openTable(name);
+        } else {
+          throw createErr;
+        }
+      }
     }
 
     // 如果启用 FTS，为文本字段创建全文索引
@@ -76,8 +101,22 @@ export class LanceDBStore implements MemoryStore {
     if (!fields || fields.length === 0) return;
 
     try {
-      const lancedb = await import("@lancedb/lancedb");
+      const lancedb = await loadLanceDB();
+
+      // 先检查已有索引，避免重复创建
+      let existingIndices: Array<{ indexType?: string; columns?: string[] }> = [];
+      try {
+        existingIndices = await table.listIndices();
+      } catch {
+        // listIndices 不可用时继续尝试创建
+      }
+
       for (const field of fields) {
+        const hasIndex = existingIndices.some(
+          (idx) => idx.indexType === "FTS" && idx.columns?.includes(field)
+        );
+        if (hasIndex) continue;
+
         await table.createIndex(field, {
           config: lancedb.Index.fts({
             withPosition: true,
@@ -86,7 +125,7 @@ export class LanceDBStore implements MemoryStore {
       }
       this.ftsIndexed.add(name);
     } catch {
-      // FTS 索引创建失败（可能已存在或列不支持），静默跳过
+      // FTS 索引创建失败，静默跳过，标记为已尝试
       this.ftsIndexed.add(name);
     }
   }
@@ -105,7 +144,18 @@ export class LanceDBStore implements MemoryStore {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(row)) {
       if (typeof v === "bigint") {
+        // LanceDB/Arrow 可能返回 BigInt
         result[k] = Number(v);
+      } else if (
+        v !== null &&
+        typeof v === "object" &&
+        typeof (v as { length?: unknown }).length === "number" &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        typeof (v as any)[Symbol.iterator] === "function" &&
+        k === VECTOR_COLUMN
+      ) {
+        // Arrow Vector 对象（Array.isArray 返回 false）→ 转为 number[]
+        result[k] = Array.from(v as Iterable<number>);
       } else {
         result[k] = v;
       }
@@ -215,33 +265,32 @@ export class LanceDBStore implements MemoryStore {
     const t = await this.getTable(table);
     const vectorArr = Array.from(vector);
     const topK = options.topK ?? 10;
+    const fetchLimit = Math.min(topK * 10, 200); // over-fetch for better filtering
 
     let q = t.vectorSearch(vectorArr)
       .column(VECTOR_COLUMN)
-      .limit(topK);
+      .limit(fetchLimit);
 
     if (options.filter) {
       q = q.where(buildWhereClause(options.filter));
     }
 
-    if (!options.includeVectors) {
-      // 不在这里显式设置 select，让默认行为决定
-    }
-
     const rawRows: unknown[] = await q.toArray();
 
-    const results = rawRows
-      .map((r) => {
-        const row = this.deserializeRow<T & { _distance?: number }>(
-          r as Record<string, unknown>
-        );
-        // 距离 → 相似度分数（余弦距离：score = 1 - distance）
-        const dist = (row as unknown as Record<string, unknown>)["_distance"] as number | undefined;
-        const score = dist !== undefined ? Math.max(0, 1 - dist) : 1;
-        delete (row as unknown as Record<string, unknown>)["_distance"];
-        return { ...row, _score: score } as T & { _score: number };
-      })
-      .filter((r) => options.minScore === undefined || r._score >= options.minScore);
+    const results: Array<T & { _score: number }> = [];
+    for (const r of rawRows) {
+      const row = this.deserializeRow<T & { _distance?: number }>(
+        r as Record<string, unknown>
+      );
+      const dist = Number((row as unknown as Record<string, unknown>)["_distance"] ?? 0);
+      const score = 1 / (1 + dist); // 更稳健的评分方式
+      delete (row as unknown as Record<string, unknown>)["_distance"];
+
+      if (options.minScore !== undefined && score < options.minScore) continue;
+
+      results.push({ ...row, _score: score } as T & { _score: number });
+      if (results.length >= topK) break;
+    }
 
     return results;
   }
@@ -277,8 +326,11 @@ export class LanceDBStore implements MemoryStore {
 
     return rawRows.map((r) => {
       const row = this.deserializeRow<T>(r as Record<string, unknown>);
-      const score = (r as Record<string, unknown>)["_score"] as number | undefined;
-      return { ...row, _score: score ?? 1 } as T & { _score: number };
+      const rawScore = (r as Record<string, unknown>)["_score"];
+      // BM25 原始分数用 sigmoid 归一化
+      const numScore = rawScore != null ? Number(rawScore) : 0;
+      const normalizedScore = numScore > 0 ? 1 / (1 + Math.exp(-numScore / 5)) : 0.5;
+      return { ...row, _score: normalizedScore } as T & { _score: number };
     });
   }
 

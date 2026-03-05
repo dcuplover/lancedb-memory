@@ -11,10 +11,11 @@
 
 import * as path from "path";
 import * as os from "os";
-import { LanceDBStore } from "./lance-store";
+import { existsSync, mkdirSync, accessSync, constants } from "node:fs";
+import { LanceDBStore, loadLanceDB, DimensionMismatchError } from "./lance-store";
 import { SQLiteStore } from "./sqlite-store";
 import { runMigrations, MIGRATIONS } from "./migrations";
-import { getSampleRow, TABLE_NAMES } from "./schema";
+import { getSampleRow, TABLE_NAMES, TABLES_WITHOUT_VECTOR } from "./schema";
 import { DEFAULT_STORE_CONFIG } from "./types";
 import type { MemoryStore, StoreConfig } from "./types";
 
@@ -33,6 +34,31 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ─── 存储路径预检查 ────────────────────────────────────────────────────────────
+
+function validateStoragePath(dbPath: string): void {
+  // 创建目录（如不存在）
+  if (!existsSync(dbPath)) {
+    try {
+      mkdirSync(dbPath, { recursive: true });
+    } catch (err: unknown) {
+      const e = err as NodeJS.ErrnoException;
+      throw new Error(
+        `Failed to create dbPath directory "${dbPath}": ${e.code ?? ""} ${e.message}`
+      );
+    }
+  }
+  // 检查写权限
+  try {
+    accessSync(dbPath, constants.W_OK);
+  } catch (err: unknown) {
+    const e = err as NodeJS.ErrnoException;
+    throw new Error(
+      `dbPath directory "${dbPath}" is not writable: ${e.code ?? ""} ${e.message}`
+    );
+  }
+}
+
 // ─── LanceDB 初始化 ───────────────────────────────────────────────────────────
 
 const LANCEDB_CONNECT_TIMEOUT_MS = 5000;
@@ -42,17 +68,23 @@ async function tryInitLance(
   config: StoreConfig,
   logger?: Logger
 ): Promise<LanceDBStore> {
-  const lancedb = await import("@lancedb/lancedb");
+  const lancedb = await loadLanceDB(); // 使用单例
 
+  validateStoragePath(dbPath);
+
+  // 连接超时 —— 清理 timer 防泄漏
+  let connectTimer: ReturnType<typeof setTimeout> | undefined;
   const db = await Promise.race([
     lancedb.connect(dbPath),
-    new Promise<never>((_, reject) =>
-      setTimeout(
+    new Promise<never>((_, reject) => {
+      connectTimer = setTimeout(
         () => reject(new Error(`LanceDB connect timeout after ${LANCEDB_CONNECT_TIMEOUT_MS}ms: ${dbPath}`)),
         LANCEDB_CONNECT_TIMEOUT_MS
-      )
-    ),
-  ]);
+      );
+    }),
+  ]).finally(() => {
+    if (connectTimer) clearTimeout(connectTimer);
+  });
 
   // 确保所有表存在
   for (const tableName of TABLE_NAMES) {
@@ -66,6 +98,24 @@ async function tryInitLance(
 
   // 运行迁移
   await runMigrations({ lanceDb: db }, MIGRATIONS);
+
+  // 确保所有表存在后，校验向量维度
+  for (const tableName of TABLE_NAMES) {
+    if (TABLES_WITHOUT_VECTOR.has(tableName)) continue;
+    try {
+      const table = await db.openTable(tableName);
+      const sample = await table.query().limit(1).toArray();
+      if (sample.length > 0 && sample[0]?.vector !== undefined && sample[0].vector.length > 0) {
+        const existingDim = sample[0].vector.length;
+        if (existingDim !== config.vectorDimension) {
+          throw new DimensionMismatchError(config.vectorDimension, existingDim);
+        }
+      }
+    } catch (err) {
+      if (err instanceof DimensionMismatchError) throw err;
+      // 其他错误忽略（空表等）
+    }
+  }
 
   logger?.info?.(`[store] LanceDB 连接成功：${dbPath}`);
   return new LanceDBStore(db, config);
