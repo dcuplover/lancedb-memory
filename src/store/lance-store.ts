@@ -111,8 +111,9 @@ export class LanceDBStore implements MemoryStore {
         // listIndices 不可用时继续尝试创建
       }
 
+      const indices = Array.isArray(existingIndices) ? existingIndices : [];
       for (const field of fields) {
-        const hasIndex = existingIndices.some(
+        const hasIndex = indices.some(
           (idx) => idx.indexType === "FTS" && idx.columns?.includes(field)
         );
         if (hasIndex) continue;

@@ -95,13 +95,14 @@ export function createRetriever(
     if (!query.vector && !query.text) return [];
 
     try {
-      const filter: FilterExpression = {
-        and: [
-          { gt: ["expiresAt", Date.now()] },
-          query.filters?.scope ? { eq: ["sessionKey", query.filters.scope] } : null,
-        ].filter(Boolean) as FilterExpression[],
-      };
-      const effectiveFilter = filter.and!.length > 0 ? filter : undefined;
+      const filterParts: FilterExpression[] = [
+        { gt: ["expiresAt", Date.now()] },
+      ];
+      if (query.filters?.scope) {
+        filterParts.push({ eq: ["sessionKey", query.filters.scope] });
+      }
+      const effectiveFilter: FilterExpression | undefined =
+        filterParts.length > 0 ? { and: filterParts } : undefined;
 
       // 优先使用混合搜索
       if (query.vector && query.text) {
@@ -228,16 +229,19 @@ export function createRetriever(
 
       // intentKey 精确匹配
       if (query.intentKey) {
-        const filter: FilterExpression = {
-          and: [
-            { eq: ["intentKey", query.intentKey] },
-            query.targetKey ? { eq: ["targetKey", query.targetKey] } : null,
-          ].filter(Boolean) as FilterExpression[],
-        };
+        const filterParts: FilterExpression[] = [
+          { eq: ["intentKey", query.intentKey] },
+        ];
+        if (query.targetKey) {
+          filterParts.push({ eq: ["targetKey", query.targetKey] });
+        }
+        const filter: FilterExpression = filterParts.length === 1
+          ? filterParts[0]
+          : { and: filterParts };
 
         const intentResults = await store.query(
           "episodic",
-          filter.and!.length > 0 ? filter : { eq: ["intentKey", query.intentKey] },
+          filter,
           { limit: topK, orderBy: "timestamp", orderDir: "desc" }
         );
 
