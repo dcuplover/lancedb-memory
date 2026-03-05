@@ -14,17 +14,22 @@ import type { FilterExpression } from "./types";
  * @throws {Error} 遇到未知运算符或列名非法时抛出
  */
 export function buildWhereClause(expr: FilterExpression): string {
-  // and
+  // null/undefined 防御
+  if (!expr) return "1=1";
+
+  // and — 过滤掉可能的 null/undefined 子表达式
   if (expr.and !== undefined) {
-    if (expr.and.length === 0) return "1=1";
-    const parts = expr.and.map(buildWhereClause);
+    const validParts = expr.and.filter(Boolean);
+    if (validParts.length === 0) return "1=1";
+    const parts = validParts.map(buildWhereClause);
     return `(${parts.join(" AND ")})`;
   }
 
-  // or
+  // or — 过滤掉可能的 null/undefined 子表达式
   if (expr.or !== undefined) {
-    if (expr.or.length === 0) return "1=0";
-    const parts = expr.or.map(buildWhereClause);
+    const validParts = expr.or.filter(Boolean);
+    if (validParts.length === 0) return "1=0";
+    const parts = validParts.map(buildWhereClause);
     return `(${parts.join(" OR ")})`;
   }
 
